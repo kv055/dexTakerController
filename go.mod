@@ -4,31 +4,31 @@ go 1.26.8
 
 require (
 	commons v0.0.0
-	github.com/BoltzExchange/boltz-client/v2 v2.11.0
-	github.com/ProtonMail/go-crypto v1.4.1
+	github.com/BoltzExchange/boltz-client/v2 v2.12.5
+	github.com/ProtonMail/go-crypto v1.5.2
 	github.com/binance/binance-connector-go/clients/derivativestradingusdsfutures v1.24.1
 	github.com/binance/binance-connector-go/clients/spot v1.20.0
 	github.com/binance/binance-connector-go/clients/wallet v1.19.0
-	github.com/btcsuite/btcd v0.24.2
-	github.com/btcsuite/btcd/btcec/v2 v2.3.4
-	github.com/btcsuite/btcd/btcutil v1.1.5
-	github.com/btcsuite/btcd/btcutil/psbt v1.1.9
+	github.com/btcsuite/btcd v0.27.0
+	github.com/btcsuite/btcd/btcec/v2 v2.5.1
+	github.com/btcsuite/btcd/btcutil/v2 v2.0.2
+	github.com/btcsuite/btcd/btcutil/psbt v1.2.0
 	github.com/coder/websocket v1.8.15
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
-	github.com/getkin/kin-openapi v0.147.0
+	github.com/getkin/kin-openapi v0.149.0
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.9.2
+	github.com/jackc/pgx/v5 v5.13.0
 	github.com/krakenfx/api-go/v2 v2.0.0
 	github.com/nbd-wtf/go-nostr v0.52.3
-	github.com/oapi-codegen/runtime v1.9.0
+	github.com/oapi-codegen/runtime v1.9.1
 	github.com/prometheus/client_golang v1.25.0
 	github.com/tyler-smith/go-bip32 v1.0.0
 	github.com/tyler-smith/go-bip39 v1.1.0
 	golang.org/x/crypto v0.59.0
-	google.golang.org/grpc v1.83.2
+	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
-	gorm.io/driver/postgres v1.5.0
-	gorm.io/gorm v1.30.0
+	gorm.io/driver/postgres v1.6.3
+	gorm.io/gorm v1.31.2
 )
 
 require (

@@ -9,9 +9,9 @@ require (
 	github.com/binance/binance-connector-go/clients/derivativestradingusdsfutures v1.24.1
 	github.com/binance/binance-connector-go/clients/spot v1.20.0
 	github.com/binance/binance-connector-go/clients/wallet v1.19.0
-	github.com/btcsuite/btcd v0.27.0
-	github.com/btcsuite/btcd/btcec/v2 v2.5.1
-	github.com/btcsuite/btcd/btcutil/v2 v2.0.2
+	github.com/btcsuite/btcd v0.24.3-0.20250318170759-4f4ea81776d6
+	github.com/btcsuite/btcd/btcec/v2 v2.3.4
+	github.com/btcsuite/btcd/btcutil v1.1.5
 	github.com/btcsuite/btcd/btcutil/psbt v1.2.0
 	github.com/coder/websocket v1.8.15
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
@@ -35,19 +35,21 @@ require (
 	github.com/FactomProject/basen v0.0.0-20150613233007-fe3947df716e // indirect
 	github.com/FactomProject/btcutilecc v0.0.0-20130527213604-d3a63a5752ec // indirect
 	github.com/ImVexed/fasturl v0.0.0-20230304231329-4e41488060f3 // indirect
+	github.com/aead/chacha20 v0.0.0-20180709150244-8b13a72661da // indirect
 	github.com/aead/siphash v1.0.1 // indirect
 	github.com/andybalholm/brotli v1.2.7 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/binance/binance-connector-go/common/v2 v2.11.0 // indirect
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0 // indirect
-	github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f // indirect
-	github.com/btcsuite/btcwallet v0.16.10-0.20240404104514-b2f31f9045fb // indirect
-	github.com/btcsuite/btcwallet/wallet/txauthor v1.3.4 // indirect
-	github.com/btcsuite/btcwallet/wallet/txrules v1.2.1 // indirect
-	github.com/btcsuite/btcwallet/wallet/txsizes v1.2.4 // indirect
-	github.com/btcsuite/btcwallet/walletdb v1.4.2 // indirect
-	github.com/btcsuite/btcwallet/wtxmgr v1.5.3 // indirect
+	github.com/btcsuite/btclog v1.0.0 // indirect
+	github.com/btcsuite/btclog/v2 v2.0.1-0.20250728225537-6090e87c6c5b // indirect
+	github.com/btcsuite/btcwallet v0.16.15-0.20250805011126-a3632ae48ab3 // indirect
+	github.com/btcsuite/btcwallet/wallet/txauthor v1.3.5 // indirect
+	github.com/btcsuite/btcwallet/wallet/txrules v1.2.2 // indirect
+	github.com/btcsuite/btcwallet/wallet/txsizes v1.2.5 // indirect
+	github.com/btcsuite/btcwallet/walletdb v1.5.1 // indirect
+	github.com/btcsuite/btcwallet/wtxmgr v1.5.6 // indirect
 	github.com/btcsuite/go-socks v0.0.0-20170105172521-4720035b7bfd // indirect
 	github.com/btcsuite/websocket v0.0.0-20150119174127-31079b680792 // indirect
 	github.com/btcsuite/winsvc v1.0.0 // indirect
@@ -62,7 +64,6 @@ require (
 	github.com/decred/dcrd/lru v1.1.2 // indirect
 	github.com/fatih/color v1.15.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
-	github.com/go-errors/errors v1.4.2 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
@@ -71,25 +72,27 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.30.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	github.com/jessevdk/go-flags v1.5.0 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
-	github.com/jrick/logrotate v1.0.0 // indirect
+	github.com/jrick/logrotate v1.1.2 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/kkdai/bstream v1.0.0 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/lightninglabs/gozmq v0.0.0-20191113021534-d20a764486bf // indirect
-	github.com/lightninglabs/neutrino v0.16.1-0.20240425105051-602843d34ffd // indirect
+	github.com/lightninglabs/neutrino v0.16.1 // indirect
 	github.com/lightninglabs/neutrino/cache v1.1.2 // indirect
-	github.com/lightningnetwork/lnd v0.18.0-beta // indirect
+	github.com/lightningnetwork/lightning-onion v1.2.1-0.20240712235311-98bd56499dfb // indirect
+	github.com/lightningnetwork/lnd v0.19.3-beta // indirect
 	github.com/lightningnetwork/lnd/clock v1.1.1 // indirect
-	github.com/lightningnetwork/lnd/fn v1.0.5 // indirect
+	github.com/lightningnetwork/lnd/fn/v2 v2.0.8 // indirect
 	github.com/lightningnetwork/lnd/queue v1.1.1 // indirect
 	github.com/lightningnetwork/lnd/ticker v1.1.1 // indirect
-	github.com/lightningnetwork/lnd/tlv v1.2.3 // indirect
-	github.com/lightningnetwork/lnd/tor v1.1.2 // indirect
+	github.com/lightningnetwork/lnd/tlv v1.3.1 // indirect
+	github.com/lightningnetwork/lnd/tor v1.1.6 // indirect
 	github.com/mailru/easyjson v0.9.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
@@ -104,7 +107,7 @@ require (
 	github.com/prometheus/common v0.72.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3 // indirect
 	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7 // indirect
@@ -139,8 +142,7 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260928230214-8a89bd6388cc // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
+	pgregory.net/rapid v1.2.0 // indirect
 )
 
 replace commons => ../commons
-
-replace github.com/btcsuite/btcd/btcec/v2 v2.3.4 => github.com/btcsuite/btcd/btcec/v2 v2.3.3

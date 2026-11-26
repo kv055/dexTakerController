@@ -1,6 +1,7 @@
 package api
 
 import (
+	"commons/apierror"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,7 +58,7 @@ func (s *Server) handleBisqExecutionAccept(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleBisqExecutionQuote(w http.ResponseWriter, r *http.Request) {
 	if s.bisqExec == nil {
-		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("automated Bisq execution is not configured"))
+		writeError(w, http.StatusServiceUnavailable, apierror.New(CodeBisqDisabled, "Automated Bisq trading is not set up on this Taker Controller, so Bisq offers can't be taken. Check the Bisq settings in its configuration and restart it."))
 		return
 	}
 	var req bisqQuoteRequest
@@ -178,14 +179,33 @@ func (s *Server) handleBisqFundingDestination(w http.ResponseWriter, r *http.Req
 	}
 }
 
+// writeBisqExecError maps Bisq execution sentinels to operator messages. The
+// codes quote_expired and bisq_execution_expired tell the dashboard that the
+// saved acceptance can be discarded because the trade was never accepted.
 func writeBisqExecError(w http.ResponseWriter, err error) {
+	if _, ok := apierror.As(err); ok {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	switch {
 	case errors.Is(err, bisqexec.ErrAutomatedDisabled):
-		writeError(w, http.StatusServiceUnavailable, err)
-	case errors.Is(err, bisqexec.ErrQuoteExpired), errors.Is(err, bisqexec.ErrIdempotencyReuse), errors.Is(err, db.ErrBisqConflict), errors.Is(err, db.ErrBisqExpired):
-		writeError(w, http.StatusConflict, err)
+		writeError(w, http.StatusServiceUnavailable, apierror.Wrap(err, bisqexec.CodeBisqDisabled,
+			"Automated Bisq trading isn't ready on this Taker Controller, so Bisq offers can't be taken right now. Check the Bisq daemon and the Bisq settings under Trading Accounts."))
+	case errors.Is(err, bisqexec.ErrQuoteExpired):
+		writeError(w, http.StatusConflict, apierror.Wrap(err, bisqexec.CodeQuoteExpired,
+			"This Bisq quote expired before the trade was confirmed (quotes last 60 seconds). Nothing was traded; close the confirmation and confirm again with a fresh quote."))
+	case errors.Is(err, db.ErrBisqExpired):
+		writeError(w, http.StatusConflict, apierror.Wrap(err, bisqexec.CodeExecutionExpired,
+			"This Bisq trade expired before it was accepted, so nothing was traded. Start a new trade with a fresh quote."))
+	case errors.Is(err, bisqexec.ErrIdempotencyReuse):
+		writeError(w, http.StatusConflict, apierror.Wrap(err, bisqexec.CodeIdempotencyConflict,
+			"This trade request was already sent with different details, so it was refused to prevent a double trade. Reload the page to see the saved trade."))
+	case errors.Is(err, db.ErrBisqConflict):
+		writeError(w, http.StatusConflict, apierror.Wrap(err, bisqexec.CodeExecutionConflict,
+			"Another step of this Bisq trade is already running. Wait for it to finish and follow its progress in the Transactions panel."))
 	case errors.Is(err, db.ErrBisqQuoteNotFound):
-		writeError(w, http.StatusBadRequest, err)
+		writeError(w, http.StatusBadRequest, apierror.Wrap(err, bisqexec.CodeQuoteNotFound,
+			"This Bisq quote no longer exists. Close the confirmation and request a new quote."))
 	default:
 		writeError(w, http.StatusBadRequest, err)
 	}

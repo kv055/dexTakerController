@@ -499,7 +499,14 @@ func (c *Client) request(ctx context.Context, method, path string, body any, out
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 408 && resp.StatusCode != 429 {
-			return permanent("robosats: %s %s returned HTTP %d", method, path, resp.StatusCode)
+			// Keep the coordinator's explanation: on 4xx it says why it refused
+			// (order taken or cancelled, robot not allowed, invalid amount, ...).
+			detail := readErrorDetail(resp.Body)
+			msg := fmt.Sprintf("robosats: %s %s returned HTTP %d", method, path, resp.StatusCode)
+			if detail != "" {
+				msg += " (" + detail + ")"
+			}
+			return &ProtocolError{Message: msg, Status: resp.StatusCode, Detail: detail}
 		}
 		if detail := readErrorDetail(resp.Body); detail != "" {
 			return fmt.Errorf("robosats: %s %s returned HTTP %d (%s)", method, path, resp.StatusCode, detail)

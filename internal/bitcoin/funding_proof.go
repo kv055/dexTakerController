@@ -2,6 +2,7 @@ package bitcoin
 
 import (
 	"bytes"
+	"commons/apierror"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -59,7 +60,7 @@ func (ndf *NetworkDataFetcher) ProveFunding(ctx context.Context, txid, address s
 			return nil, ErrFundingUnconfirmed
 		}
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("chain proof HTTP %d", resp.StatusCode)
+			return nil, fmt.Errorf("chain proof: %w", apierror.FromResponse(resp, "the block explorer"))
 		}
 		return io.ReadAll(io.LimitReader(resp.Body, 8_000_001))
 	}
@@ -85,7 +86,9 @@ func (ndf *NetworkDataFetcher) ProveFunding(ctx context.Context, txid, address s
 			return nil, errors.New("invalid transaction output amount")
 		}
 		total += uint64(out.Value)
-		if total > 21_000_000*100_000_000 { return nil, errors.New("transaction output sum out of range") }
+		if total > 21_000_000*100_000_000 {
+			return nil, errors.New("transaction output sum out of range")
+		}
 		if bytes.Equal(out.PkScript, script) {
 			paid += uint64(out.Value)
 		}

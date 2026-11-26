@@ -1,6 +1,7 @@
 package api
 
 import (
+	"commons/apierror"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -666,8 +667,18 @@ func queryBool(r *http.Request, key string) bool {
 	return raw == "1" || raw == "true" || raw == "yes"
 }
 
+// errorOptions phrase errors that carry no operator message. The Taker
+// Controller is operator-only, so unexpected causes stay visible in the message.
+var errorOptions = apierror.Options{Service: "the Taker Controller", ExposeUnexpected: true}
+
+// writeError answers with {"error","code","detail","leg","ref"}: an operator
+// message (see commons/apierror) plus the technical cause kept separately.
 func writeError(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, map[string]string{"error": err.Error()})
+	status, body, ref := apierror.Describe(err, status, errorOptions)
+	if ref != "" || status >= http.StatusInternalServerError {
+		log.Printf("api error %d (ref %s, code %s): %v", status, ref, body.Code, err)
+	}
+	writeJSON(w, status, body)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

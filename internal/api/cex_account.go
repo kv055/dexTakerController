@@ -1,6 +1,7 @@
 package api
 
 import (
+	"commons/apierror"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"dexTakerController/internal/bitcoin"
 	"dexTakerController/internal/cexaccount"
 	"dexTakerController/internal/db"
+	"dexTakerController/internal/exchangeconnectors/dex/robosats"
 	"dexTakerController/internal/pretrade"
 	"dexTakerController/internal/tradeflow"
 )
@@ -59,7 +61,7 @@ type tradeflowRequest struct {
 
 func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 	if s.tradeFlow == nil {
-		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("tradeflow is not configured"))
+		writeError(w, http.StatusServiceUnavailable, apierror.New(tradeflow.CodeTradeflowOff, "Trade execution is not set up on this Taker Controller, so trades can't be started. Check its startup log for the missing configuration."))
 		return
 	}
 
@@ -93,11 +95,11 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.ResolvedRoute == nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route from unified API is required"))
+		writeError(w, http.StatusBadRequest, tradeflow.RouteProblem("resolved_route from unified API is required"))
 		return
 	}
 	if err := req.ResolvedRoute.ValidateAuthoritativeSnapshot(); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid resolved_route from unified API: %w", err))
+		writeError(w, http.StatusBadRequest, tradeflow.RouteProblem("invalid resolved_route from unified API: %w", err))
 		return
 	}
 	if err := validateLegacyTradeflowFields(req); err != nil {
@@ -117,12 +119,12 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 	}
 	provider := strings.TrimSpace(req.Provider)
 	if provider == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("provider is required"))
+		writeError(w, http.StatusBadRequest, tradeflow.RouteProblem("provider is required"))
 		return
 	}
 	canonical, err := cexaccount.CanonicalProvider(provider)
 	if err != nil || !cexaccount.IsCEXProvider(canonical) {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
+		writeError(w, http.StatusBadRequest, apierror.Newf(tradeflow.CodeUnsupportedRoute, "This route buys on %q, which isn't a supported exchange (supported: %s). Reopen the offer to get a fresh route.", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
 		return
 	}
 	tradeMode, err := pretrade.ParseTradeMode(req.TradeMode)
@@ -134,7 +136,7 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 	if !strings.EqualFold(req.ResolvedRoute.Provider, provider) ||
 		!strings.EqualFold(req.ResolvedRoute.MarketSide, marketSide) ||
 		!strings.EqualFold(req.ResolvedRoute.TradeMode, tradeMode) {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route does not match the requested trade"))
+		writeError(w, http.StatusBadRequest, tradeflow.RouteProblem("resolved_route does not match the requested trade"))
 		return
 	}
 	// The route snapshot is authoritative for every CEX-side execution input.
@@ -152,7 +154,7 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 	req.CEXWithdrawalFeeBTC = req.ResolvedRoute.CEXWithdrawalFeeBTC
 	req.SwapSafetyHeadroomBTC = req.ResolvedRoute.SwapSafetyHeadroomBTC
 	if req.ResolvedRoute.NeedsLightning && req.RequiredBTCLiquidity <= 0 {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero for Swap_main2lightning routes"))
+		writeError(w, http.StatusBadRequest, tradeflow.RouteProblem("required_btc_liquidity must be greater than zero for Swap_main2lightning routes"))
 		return
 	}
 	if tradeMode == pretrade.TradeModeHedgelessDoubleCollateral {
@@ -160,30 +162,30 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 		// checks give clients a 400 before any execution object is invoked, while
 		// TradeFlow still protects non-HTTP callers.
 		if req.RequiredBTCLiquidity <= 0 {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero in hedgeless mode"))
+			writeError(w, http.StatusBadRequest, tradeflow.RouteProblem("required_btc_liquidity must be greater than zero in hedgeless mode"))
 			return
 		}
 		if marketSide != "bid" {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("hedgeless execution is supported only for bid-side offers"))
+			writeError(w, http.StatusBadRequest, tradeflow.ErrHedgelessAskSide())
 			return
 		}
 		switch strings.ToLower(strings.TrimSpace(req.Dex)) {
 		case "bisq", "hodlhodl", "robosats":
 		default:
-			writeError(w, http.StatusBadRequest, fmt.Errorf("hedgeless execution is not supported for dex %q", req.Dex))
+			writeError(w, http.StatusBadRequest, tradeflow.ErrHedgelessDEX(req.Dex))
 			return
 		}
 		if canonical != "Binance" && canonical != "Kraken" {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("hedgeless pool refill is not supported for provider %q", provider))
+			writeError(w, http.StatusBadRequest, tradeflow.ErrHedgelessProvider(provider, "Binance", "Kraken"))
 			return
 		}
 	} else {
 		if strings.TrimSpace(req.HedgeVenue) == "" {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("hedge_venue is required"))
+			writeError(w, http.StatusBadRequest, tradeflow.ErrNoHedgeVenue())
 			return
 		}
 		if req.HedgeNotionalBTC <= 0 {
-			writeError(w, http.StatusBadRequest, fmt.Errorf("hedge_notional_btc must be greater than zero"))
+			writeError(w, http.StatusBadRequest, tradeflow.RouteProblem("hedge_notional_btc must be greater than zero"))
 			return
 		}
 	}
@@ -229,7 +231,7 @@ func (s *Server) handleCexTradeflow(w http.ResponseWriter, r *http.Request) {
 			AdmitRoboSats(context.Context, tradeflow.Order) (uint, error)
 		})
 		if !ok {
-			writeError(w, http.StatusServiceUnavailable, fmt.Errorf("RoboSats durable execution unavailable"))
+			writeError(w, http.StatusServiceUnavailable, robosats.ErrDisabled())
 			return
 		}
 		id, err := admitter.AdmitRoboSats(r.Context(), order)
@@ -273,12 +275,12 @@ func (s *Server) applyExecutionQuote(ctx context.Context, req *tradeflowRequest)
 	quoteID := strings.TrimSpace(req.QuoteID)
 	if quoteID == "" {
 		if strings.EqualFold(strings.TrimSpace(req.Dex), "robosats") {
-			return fmt.Errorf("quote_id is required for RoboSats execution")
+			return apierror.New(CodeQuoteMissing, "RoboSats trades need a fresh quote, and this request had none. Close the confirmation, wait for the quote to load, then confirm again.").WithStatus(http.StatusBadRequest)
 		}
 		return nil
 	}
 	if s.repo == nil {
-		return fmt.Errorf("execution quotes are unavailable")
+		return apierror.New(tradeflow.CodeTradeflowOff, "Execution quotes can't be checked because the Taker Controller has no database connection. Check its startup log.").WithStatus(http.StatusServiceUnavailable)
 	}
 	quote, err := s.repo.LoadExecutionQuote(ctx, quoteID)
 	if err != nil {
@@ -289,19 +291,19 @@ func (s *Server) applyExecutionQuote(ctx context.Context, req *tradeflowRequest)
 
 func applyStoredQuote(req *tradeflowRequest, quote *db.ExecutionQuote, now time.Time) error {
 	if quote == nil {
-		return fmt.Errorf("execution quote not found")
+		return apierror.New(CodeQuoteNotFound, "This quote no longer exists. Close the confirmation and request a new quote.").WithStatus(http.StatusConflict)
 	}
 	if req.Dex != "" && !strings.EqualFold(req.Dex, quote.Exchange) {
-		return fmt.Errorf("quote exchange mismatch")
+		return quoteMismatch("venue")
 	}
 	if req.OfferID != "" && req.OfferID != quote.OfferID {
-		return fmt.Errorf("quote offer mismatch")
+		return quoteMismatch("offer")
 	}
 	if req.TransactionID != 0 && req.TransactionID != quote.TransactionID {
-		return fmt.Errorf("quote transaction mismatch")
+		return quoteMismatch("transaction")
 	}
 	if req.PaymentMethod != "" && req.PaymentMethod != quote.PaymentMethod {
-		return fmt.Errorf("quote payment method mismatch")
+		return quoteMismatch("payment method")
 	}
 	req.Dex = quote.Exchange
 	req.OfferID = quote.OfferID
@@ -309,10 +311,10 @@ func applyStoredQuote(req *tradeflowRequest, quote *db.ExecutionQuote, now time.
 	if quote.TransactionID > 0 {
 		req.TransactionID = quote.TransactionID
 	} else if !now.Before(quote.ExpiresAt) {
-		return fmt.Errorf("execution quote expired")
+		return apierror.New(CodeQuoteExpired, "This quote expired before the trade was confirmed. Close the confirmation and confirm again with a fresh quote.").WithStatus(http.StatusConflict)
 	}
 	if quote.Route == nil {
-		return fmt.Errorf("execution quote has no route")
+		return apierror.New(tradeflow.CodeInvalidRoute, "This quote has no route, so the trade can't be started. Close the confirmation and request a new quote.").WithStatus(http.StatusConflict)
 	}
 	req.ResolvedRoute = quote.Route
 	if quote.PaymentMethod != "" {
@@ -320,7 +322,7 @@ func applyStoredQuote(req *tradeflowRequest, quote *db.ExecutionQuote, now time.
 	}
 	selected := map[string]any{}
 	if len(req.SelectedOffer) > 0 && json.Unmarshal(req.SelectedOffer, &selected) != nil {
-		return fmt.Errorf("invalid selected offer")
+		return tradeflow.RouteProblem("invalid selected offer")
 	}
 	authoritative := map[string]any{"exchange": quote.Exchange, "offer_id": quote.OfferID, "venue_coordinator_id": quote.CoordinatorID, "quote_id": quote.ID, "max_bond_sat": quote.MaxBondSat, "max_escrow_sat": quote.MaxEscrowSat, "bond_fee_sat": quote.BondFeeSat, "escrow_fee_sat": quote.EscrowFeeSat}
 	for key, want := range authoritative {
@@ -328,7 +330,7 @@ func applyStoredQuote(req *tradeflowRequest, quote *db.ExecutionQuote, now time.
 			actual, _ := json.Marshal(got)
 			expected, _ := json.Marshal(want)
 			if string(actual) != string(expected) {
-				return fmt.Errorf("quote field %s mismatch", key)
+				return quoteMismatch(strings.ReplaceAll(key, "_", " "))
 			}
 		}
 		selected[key] = want
@@ -341,11 +343,11 @@ func applyStoredQuote(req *tradeflowRequest, quote *db.ExecutionQuote, now time.
 func (s *Server) acceptBisqTradeflow(w http.ResponseWriter, r *http.Request, req tradeflowRequest) {
 	quoteID := strings.TrimSpace(req.QuoteID)
 	if quoteID == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("quote_id is required for Bisq execution"))
+		writeError(w, http.StatusBadRequest, apierror.New(CodeQuoteMissing, "Bisq trades need a fresh Bisq quote, and this request had none. Close the confirmation, wait for the Bisq quote to load, then confirm again."))
 		return
 	}
 	if s.bisqExec == nil {
-		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("automated Bisq execution is not configured"))
+		writeError(w, http.StatusServiceUnavailable, apierror.New(CodeBisqDisabled, "Automated Bisq trading is not set up on this Taker Controller, so Bisq offers can't be taken. Check the Bisq settings in its configuration and restart it."))
 		return
 	}
 	key := strings.TrimSpace(req.IdempotencyKey)
@@ -366,9 +368,11 @@ func (s *Server) acceptBisqTradeflow(w http.ResponseWriter, r *http.Request, req
 func validateLegacyTradeflowFields(req tradeflowRequest) error {
 	r := req.ResolvedRoute
 	if r == nil {
-		return fmt.Errorf("resolved_route from unified API is required")
+		return tradeflow.RouteProblem("resolved_route from unified API is required")
 	}
-	mismatch := func(name string) error { return fmt.Errorf("legacy field %s does not match resolved_route", name) }
+	mismatch := func(name string) error {
+		return tradeflow.RouteProblem("legacy field %s does not match resolved_route", name)
+	}
 	if req.Provider != "" && !strings.EqualFold(req.Provider, r.Provider) {
 		return mismatch("provider")
 	}
@@ -492,7 +496,7 @@ type preTradeCheckRequest struct {
 // confirms. It places no order.
 func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) {
 	if s.cexAccount == nil {
-		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("cex account service is not configured"))
+		writeError(w, http.StatusServiceUnavailable, apierror.New(tradeflow.CodeTradeflowOff, "Exchange accounts are not set up on this Taker Controller, so pre-trade checks can't run. Check its startup log for the missing configuration."))
 		return
 	}
 
@@ -511,11 +515,11 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 		req.PaymentMethod = bound.PaymentMethod
 	}
 	if req.ResolvedRoute == nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("resolved_route from unified API is required"))
+		writeError(w, http.StatusBadRequest, tradeflow.RouteProblem("resolved_route from unified API is required"))
 		return
 	}
 	if err := req.ResolvedRoute.ValidateAuthoritativeSnapshot(); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid resolved_route from unified API: %w", err))
+		writeError(w, http.StatusBadRequest, tradeflow.RouteProblem("invalid resolved_route from unified API: %w", err))
 		return
 	}
 	if err := validateLegacyPreTradeFields(req); err != nil {
@@ -525,12 +529,12 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 	route := req.ResolvedRoute
 	provider := strings.TrimSpace(route.Provider)
 	if provider == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("provider is required"))
+		writeError(w, http.StatusBadRequest, tradeflow.RouteProblem("provider is required"))
 		return
 	}
 	canonical, err := cexaccount.CanonicalProvider(provider)
 	if err != nil || !cexaccount.IsCEXProvider(canonical) {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
+		writeError(w, http.StatusBadRequest, apierror.Newf(tradeflow.CodeUnsupportedRoute, "This route buys on %q, which isn't a supported exchange (supported: %s). Reopen the offer to get a fresh route.", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
 		return
 	}
 	tradeMode, err := pretrade.ParseTradeMode(route.TradeMode)
@@ -541,7 +545,7 @@ func (s *Server) handleCexPreTradeCheck(w http.ResponseWriter, r *http.Request) 
 	marketSide := normalizeMarketSide(route.MarketSide)
 	dex := strings.TrimSpace(req.Dex)
 	if route.Settlement == "onchain_swap" && route.RequiredBTCLiquidity <= 0 {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("required_btc_liquidity must be greater than zero for Swap_main2lightning routes"))
+		writeError(w, http.StatusBadRequest, tradeflow.RouteProblem("required_btc_liquidity must be greater than zero for Swap_main2lightning routes"))
 		return
 	}
 	if route.Settlement == "onchain_swap" && route.RoutingFeeAllowanceSat <= 0 {
@@ -607,9 +611,11 @@ func (s *Server) lightningLiquiditySource(ctx context.Context, settlement string
 func validateLegacyPreTradeFields(req preTradeCheckRequest) error {
 	r := req.ResolvedRoute
 	if r == nil {
-		return fmt.Errorf("resolved_route from unified API is required")
+		return tradeflow.RouteProblem("resolved_route from unified API is required")
 	}
-	mismatch := func(name string) error { return fmt.Errorf("legacy field %s does not match resolved_route", name) }
+	mismatch := func(name string) error {
+		return tradeflow.RouteProblem("legacy field %s does not match resolved_route", name)
+	}
 	if req.Provider != "" && !strings.EqualFold(req.Provider, r.Provider) {
 		return mismatch("provider")
 	}
@@ -696,7 +702,7 @@ func (s *Server) handleCexProviderRequest(
 	run func(context.Context, string) (any, error),
 ) {
 	if s.cexAccount == nil {
-		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("cex account service is not configured"))
+		writeError(w, http.StatusServiceUnavailable, apierror.New(tradeflow.CodeTradeflowOff, "Exchange accounts are not set up on this Taker Controller, so pre-trade checks can't run. Check its startup log for the missing configuration."))
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -710,7 +716,7 @@ func (s *Server) handleCexProviderRequest(
 	}
 	canonical, err := cexaccount.CanonicalProvider(provider)
 	if err != nil || !cexaccount.IsCEXProvider(canonical) {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
+		writeError(w, http.StatusBadRequest, apierror.Newf(tradeflow.CodeUnsupportedRoute, "This route buys on %q, which isn't a supported exchange (supported: %s). Reopen the offer to get a fresh route.", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
 		return
 	}
 
@@ -745,7 +751,7 @@ type withdrawalTrackResponse struct {
 
 func (s *Server) handleCexWithdrawalTrack(w http.ResponseWriter, r *http.Request) {
 	if s.cexAccount == nil {
-		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("cex account service is not configured"))
+		writeError(w, http.StatusServiceUnavailable, apierror.New(tradeflow.CodeTradeflowOff, "Exchange accounts are not set up on this Taker Controller, so pre-trade checks can't run. Check its startup log for the missing configuration."))
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -760,7 +766,7 @@ func (s *Server) handleCexWithdrawalTrack(w http.ResponseWriter, r *http.Request
 	}
 	canonical, err := cexaccount.CanonicalProvider(provider)
 	if err != nil || !cexaccount.IsCEXProvider(canonical) {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("unsupported provider %q; supported providers: %s", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
+		writeError(w, http.StatusBadRequest, apierror.Newf(tradeflow.CodeUnsupportedRoute, "This route buys on %q, which isn't a supported exchange (supported: %s). Reopen the offer to get a fresh route.", provider, strings.Join(cexaccount.SupportedCEXProviders(), ", ")))
 		return
 	}
 
@@ -785,4 +791,20 @@ func (s *Server) handleCexWithdrawalTrack(w http.ResponseWriter, r *http.Request
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// Codes for execution-quote problems at trade start.
+const (
+	CodeQuoteMissing  = "quote_missing"
+	CodeQuoteNotFound = "quote_not_found"
+	CodeQuoteExpired  = "quote_expired"
+	CodeQuoteMismatch = "quote_mismatch"
+	CodeBisqDisabled  = "bisq_disabled"
+)
+
+// quoteMismatch explains a trade request that no longer matches the quote it was confirmed with.
+func quoteMismatch(field string) error {
+	return apierror.Newf(CodeQuoteMismatch,
+		"The trade request doesn't match its quote (the %s differs), so nothing was started. Close the confirmation and confirm again with a fresh quote.", field).
+		WithStatus(http.StatusConflict)
 }

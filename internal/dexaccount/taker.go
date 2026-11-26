@@ -82,19 +82,19 @@ func (t *Taker) WithRoboSats(c *robosats.Coordinator) *Taker {
 
 // OfferInput identifies an offer to take.
 type OfferInput struct {
-	Exchange        string
-	OfferID         string
-	FiatAmount      float64
-	BTCAmount       float64
-	RequestID       uint64
-	VenueNodePubKey string
-	ProtocolVersion int
-	SourceEventID   string
-	FiatCurrency    string
-	PaymentMethod   string
-	MaxPaymentSat   int64
-	MaxBondSat      int64
-	RoutingFeeSat   int64
+	Exchange           string
+	OfferID            string
+	FiatAmount         float64
+	BTCAmount          float64
+	RequestID          uint64
+	VenueNodePubKey    string
+	ProtocolVersion    int
+	SourceEventID      string
+	FiatCurrency       string
+	PaymentMethod      string
+	MaxPaymentSat      int64
+	MaxBondSat         int64
+	RoutingFeeSat      int64
 	CoordinatorID      string
 	CredentialID       int64
 	QuoteID            string
@@ -272,16 +272,16 @@ func (t *Taker) takeBisq(ctx context.Context, in OfferInput) (*TakeResult, error
 	}
 	return &TakeResult{
 		Execution: map[string]any{
-			"exchange":             "bisq",
-			"offer_id":             in.OfferID,
-			"trade_id":             trade.TradeID,
-			"trade":                trade,
-			"requested_sats":       amountSats,
-			"trade_amount_sats":    trade.TradeAmountSats,
-			"trade_price":          trade.TradePrice,
-			"trade_volume":         trade.TradeVolume,
-			"fiat_amount":          fiatAmount,
-			"payment_account_id":   in.PaymentAccountID,
+			"exchange":           "bisq",
+			"offer_id":           in.OfferID,
+			"trade_id":           trade.TradeID,
+			"trade":              trade,
+			"requested_sats":     amountSats,
+			"trade_amount_sats":  trade.TradeAmountSats,
+			"trade_price":        trade.TradePrice,
+			"trade_volume":       trade.TradeVolume,
+			"fiat_amount":        fiatAmount,
+			"payment_account_id": in.PaymentAccountID,
 		},
 	}, nil
 }
@@ -466,19 +466,22 @@ func (t *Taker) CheckRoboSats(ctx context.Context, in OfferInput) error {
 
 func (t *Taker) QuoteRoboSats(ctx context.Context, in robosats.QuoteInput) (*robosats.NativeTerms, error) {
 	if t.robosatsExec == nil || !t.robosatsExec.Enabled {
-		return nil, fmt.Errorf("RoboSats new execution is disabled")
+		return nil, robosats.ErrDisabled()
 	}
 	_, token, err := t.latestRoboSatsCredential(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load RoboSats robot credential: %w", err)
+	}
+	if strings.TrimSpace(token) == "" {
+		return nil, robosats.ErrNoRobot()
 	}
 	api, err := t.robosatsExec.Dial(in.CoordinatorID, token)
 	if err != nil {
-		return nil, err
+		return nil, robosats.ErrCoordinatorUnknown(in.CoordinatorID, err)
 	}
 	client, ok := api.(*robosats.Client)
 	if !ok {
-		return nil, fmt.Errorf("RoboSats quote client unavailable")
+		return nil, fmt.Errorf("RoboSats quote client unavailable (dialer returned %T)", api)
 	}
 	return client.Quote(ctx, in)
 }

@@ -1,12 +1,14 @@
 package bisqexec
 
 import (
+	"commons/apierror"
 	"commons/bisqroute"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 
@@ -138,30 +140,32 @@ func (s *Service) WithEnqueue(fn func(uint)) *Service {
 
 func (s *Service) Quote(ctx context.Context, req QuoteRequest) (*QuoteResult, error) {
 	if s.daemon == nil || s.store == nil {
-		return nil, ErrAutomatedDisabled
+		return nil, setupProblem("daemon or store missing",
+			"Automated Bisq trading isn't set up on this Taker Controller (no Bisq daemon or database). Check its Bisq configuration and restart it.")
 	}
 	if err := s.daemon.RequireGuardVersion(ctx); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrAutomatedDisabled, err)
+		return nil, setupProblem(err.Error(),
+			"The Bisq daemon isn't running the guarded build this bot requires, so Bisq offers can't be taken: %s. Update or restart the Bisq daemon.", err.Error())
 	}
 	if req.ResolvedRoute == nil {
-		return nil, fmt.Errorf("resolved_route is required")
+		return nil, tradeflow.RouteProblem("resolved_route is required")
 	}
 	if err := req.ResolvedRoute.ValidateAuthoritativeSnapshot(); err != nil {
-		return nil, fmt.Errorf("invalid resolved_route: %w", err)
+		return nil, tradeflow.RouteProblem("invalid resolved_route: %w", err)
 	}
 	if req.ResolvedRoute.TargetDirection != "bid" || req.ResolvedRoute.MarketSide != "bid" ||
 		!strings.EqualFold(req.ResolvedRoute.Provider, req.Provider) || req.ResolvedRoute.TradeMode != req.TradeMode {
-		return nil, errors.New("Bisq quote requires a matching bid-side route and provider")
+		return nil, tradeflow.RouteProblem("Bisq quote requires a matching bid-side route and provider")
 	}
 	if math.IsNaN(req.MaxCexFiatSpend) || math.IsInf(req.MaxCexFiatSpend, 0) || req.MaxCexFiatSpend < 0 ||
 		math.IsNaN(req.MinFiatProceeds) || math.IsInf(req.MinFiatProceeds, 0) || req.MinFiatProceeds < 0 {
-		return nil, errors.New("Bisq limits must be finite and non-negative")
+		return nil, tradeflow.RouteProblem("Bisq limits must be finite and non-negative")
 	}
 	if req.BTCAmountSats == 0 {
 		req.BTCAmountSats = uint64(dexaccount.BTCToSats(req.ResolvedRoute.BTCAmount))
 	}
 	if req.BTCAmountSats == 0 {
-		return nil, fmt.Errorf("btc amount is required")
+		return nil, apierror.New("invalid_amount", "Enter a BTC amount greater than zero for this Bisq trade.").WithStatus(http.StatusBadRequest)
 	}
 	method := strings.TrimSpace(req.PaymentMethod)
 	currency := strings.ToUpper(strings.TrimSpace(req.FiatCurrency))
@@ -173,7 +177,8 @@ func (s *Service) Quote(ctx context.Context, req QuoteRequest) (*QuoteResult, er
 		return nil, err
 	}
 	if mapping == nil || strings.TrimSpace(mapping.BisqPaymentAccountID) == "" {
-		return nil, fmt.Errorf("%w: no Bisq payment-account mapping for %s/%s", ErrAutomatedDisabled, method, currency)
+		return nil, setupProblem(fmt.Sprintf("no Bisq payment-account mapping for %s/%s", method, currency),
+			"No Bisq payment account is linked to %s in %s. Link one under Trading Accounts → Bisq, then request the quote again.", displayMethod(method), currency)
 	}
 	accounts, err := s.daemon.GetPaymentAccounts(ctx)
 	if err != nil {
@@ -188,21 +193,24 @@ func (s *Service) Quote(ctx context.Context, req QuoteRequest) (*QuoteResult, er
 		return nil, err
 	}
 	if dest == nil || strings.TrimSpace(dest.Address) == "" {
-		return nil, fmt.Errorf("%w: no designated Bisq funding address", ErrAutomatedDisabled)
+		return nil, setupProblem("no designated Bisq funding address",
+			"No Bisq funding address is designated, so the bot can't fund Bisq trades. Designate one under Trading Accounts → Bisq.")
 	}
 	if err := s.daemon.RequireFundingAddress(ctx, dest.Address); err != nil {
 		return nil, err
 	}
 	if !strings.EqualFold(req.TradeMode, "hedgeless_double_collateral") {
 		if s.whitelist == nil {
-			return nil, fmt.Errorf("%w: CEX whitelist is not configured", ErrAutomatedDisabled)
+			return nil, setupProblem("CEX whitelist is not configured",
+				"The exchange withdrawal whitelist isn't configured on this Taker Controller, so hedgefull Bisq trades can't send BTC to the Bisq wallet. Check its exchange configuration, or use hedgeless mode.")
 		}
 		listed, err := s.whitelist.WhitelistedBTCAddresses(ctx, req.Provider)
 		if err != nil {
 			return nil, err
 		}
 		if !pretrade.AddressIsWhitelisted(dest.Address, listed) {
-			return nil, fmt.Errorf("%w: designated Bisq address is not approved at %s", ErrAutomatedDisabled, req.Provider)
+			return nil, setupProblem(fmt.Sprintf("designated Bisq address is not approved at %s", req.Provider),
+				"The Bisq funding address %s isn't on %s's withdrawal whitelist, so BTC can't be sent there. Add it to the whitelist on %s, then try again.", dest.Address, req.Provider, req.Provider)
 		}
 	}
 	daemonQuote, err := s.daemon.QuoteTakeOffer(ctx, strings.TrimSpace(req.OfferID), bisq.QuoteTakeOfferParams{
@@ -210,7 +218,8 @@ func (s *Service) Quote(ctx context.Context, req QuoteRequest) (*QuoteResult, er
 		AmountSats:       req.BTCAmountSats,
 	})
 	if bisq.RPCUnimplemented(err) {
-		return nil, fmt.Errorf("%w: daemon is missing QuoteTakeOffer", ErrAutomatedDisabled)
+		return nil, setupProblem("daemon is missing QuoteTakeOffer",
+			"The Bisq daemon doesn't support quoting take-offers, so this bot can't price Bisq trades. Update the Bisq daemon to the guarded build.")
 	}
 	if err != nil {
 		return nil, err
@@ -218,14 +227,16 @@ func (s *Service) Quote(ctx context.Context, req QuoteRequest) (*QuoteResult, er
 	if daemonQuote == nil || daemonQuote.OfferID != strings.TrimSpace(req.OfferID) || daemonQuote.PaymentAccountID != account.ID ||
 		!daemonQuote.IsBuyOffer || !daemonQuote.IsCurrencyForTakerFeeBtc || !strings.EqualFold(daemonQuote.CurrencyCode, currency) ||
 		daemonQuote.VolumeAsLong <= 0 || daemonQuote.TotalToPaySats < daemonQuote.TradeAmountSats {
-		return nil, errors.New("daemon quote does not match the requested BTC-fee bid trade")
+		return nil, quoteMismatch(errors.New("daemon quote does not match the requested BTC-fee bid trade"))
 	}
 	if daemonQuote.TradeAmountSats != req.BTCAmountSats {
-		return nil, fmt.Errorf("daemon trade amount %d does not match requested %d", daemonQuote.TradeAmountSats, req.BTCAmountSats)
+		return nil, apierror.Wrapf(fmt.Errorf("daemon trade amount %d does not match requested %d", daemonQuote.TradeAmountSats, req.BTCAmountSats), CodeBisqQuoteMismatch,
+			"Bisq would trade %d sats instead of the %d sats you asked for (the offer's limits may have changed). Refresh the offer and request a new Bisq quote.", daemonQuote.TradeAmountSats, req.BTCAmountSats).WithStatus(http.StatusConflict)
 	}
 	fiat := bisq.FiatAmountFromVolumeAsLong(daemonQuote.VolumeAsLong)
 	if s.routeQuoter == nil {
-		return nil, fmt.Errorf("%w: authoritative route quoter is not configured", ErrAutomatedDisabled)
+		return nil, setupProblem("authoritative route quoter is not configured",
+			"This Taker Controller can't reach the Unified API to re-price Bisq trades (its route quoter isn't configured). Check its Unified API settings and restart it.")
 	}
 	fundingFeeCap := uint64(0)
 	if req.TradeMode == "hedgeless_double_collateral" {
@@ -242,10 +253,10 @@ func (s *Service) Quote(ctx context.Context, req QuoteRequest) (*QuoteResult, er
 	}
 	if route == nil || route.ValidateAuthoritativeSnapshot() != nil || !strings.EqualFold(route.Provider, req.Provider) || route.TradeMode != req.TradeMode || route.MarketSide != "bid" || route.Settlement != "onchain_direct" ||
 		!strings.EqualFold(route.FiatCurrency, currency) || dexaccount.BTCToSats(route.BTCAmount) != int64(daemonQuote.TradeAmountSats) || math.Abs(route.FiatAmount-fiat) > 0.00001 || route.RequiredCapital <= 0 || math.IsNaN(route.RequiredCapital) || math.IsInf(route.RequiredCapital, 0) {
-		return nil, errors.New("authoritative route does not match daemon quote")
+		return nil, quoteMismatch(errors.New("authoritative route does not match daemon quote"))
 	}
 	limits := db.BisqSpendingLimits{
-		MaxFundingFeeSats: fundingFeeCap,
+		MaxFundingFeeSats:  fundingFeeCap,
 		MaxCexFiatSpend:    req.MaxCexFiatSpend,
 		MaxWalletDebitSats: req.MaxWalletDebitSats,
 		MinFiatProceeds:    req.MinFiatProceeds,
@@ -260,13 +271,16 @@ func (s *Service) Quote(ctx context.Context, req QuoteRequest) (*QuoteResult, er
 		limits.MaxCexFiatSpend = route.RequiredCapital
 	}
 	if daemonQuote.TotalToPaySats > limits.MaxWalletDebitSats {
-		return nil, fmt.Errorf("total to pay %d exceeds max wallet debit %d", daemonQuote.TotalToPaySats, limits.MaxWalletDebitSats)
+		return nil, limitExceeded(fmt.Errorf("total to pay %d exceeds max wallet debit %d", daemonQuote.TotalToPaySats, limits.MaxWalletDebitSats),
+			"This Bisq trade would take %d sats from the wallet, more than the %d sats limit. Lower the amount or raise the limit.", daemonQuote.TotalToPaySats, limits.MaxWalletDebitSats)
 	}
 	if fiat+1e-9 < limits.MinFiatProceeds {
-		return nil, fmt.Errorf("rounded fiat volume %.2f is below minimum proceeds %.2f", fiat, limits.MinFiatProceeds)
+		return nil, limitExceeded(fmt.Errorf("rounded fiat volume %.2f is below minimum proceeds %.2f", fiat, limits.MinFiatProceeds),
+			"This Bisq trade would pay %.2f %s, below the %.2f %s minimum you set. Raise the amount or lower the minimum.", fiat, currency, limits.MinFiatProceeds, currency)
 	}
 	if route.RequiredCapital-1e-9 > limits.MaxCexFiatSpend {
-		return nil, fmt.Errorf("required CEX spend %.2f exceeds max fiat spend %.2f", route.RequiredCapital, limits.MaxCexFiatSpend)
+		return nil, limitExceeded(fmt.Errorf("required CEX spend %.2f exceeds max fiat spend %.2f", route.RequiredCapital, limits.MaxCexFiatSpend),
+			"This Bisq trade needs %.2f %s on %s, more than the %.2f %s spending limit. Lower the amount or raise the limit.", route.RequiredCapital, currency, req.Provider, limits.MaxCexFiatSpend, currency)
 	}
 	quoteJSON, _ := json.Marshal(daemonQuote)
 	limitsJSON, _ := json.Marshal(limits)
@@ -479,12 +493,22 @@ func matchPaymentAccount(accounts []bisq.PaymentAccount, id, method, currency st
 			continue
 		}
 		if method != "" && account.PaymentMethodID != "" && !strings.EqualFold(account.PaymentMethodID, method) && !strings.Contains(strings.ToLower(method), strings.ToLower(account.PaymentMethodID)) {
-			return bisq.PaymentAccount{}, fmt.Errorf("mapped Bisq account %s payment method %s does not match %s", id, account.PaymentMethodID, method)
+			return bisq.PaymentAccount{}, setupProblem(fmt.Sprintf("mapped Bisq account %s payment method %s does not match %s", id, account.PaymentMethodID, method),
+				"The Bisq account linked to %s uses %s instead. Re-link the right Bisq account under Trading Accounts → Bisq.", displayMethod(method), account.PaymentMethodID)
 		}
 		if currency != "" && account.TradeCurrency != "" && !strings.EqualFold(account.TradeCurrency, currency) {
-			return bisq.PaymentAccount{}, fmt.Errorf("mapped Bisq account %s currency %s does not match %s", id, account.TradeCurrency, currency)
+			return bisq.PaymentAccount{}, setupProblem(fmt.Sprintf("mapped Bisq account %s currency %s does not match %s", id, account.TradeCurrency, currency),
+				"The Bisq account linked to %s trades %s, not %s. Re-link a %s account under Trading Accounts → Bisq.", displayMethod(method), account.TradeCurrency, currency, currency)
 		}
 		return account, nil
 	}
-	return bisq.PaymentAccount{}, fmt.Errorf("mapped Bisq payment account %s is not present on the daemon", id)
+	return bisq.PaymentAccount{}, setupProblem(fmt.Sprintf("mapped Bisq payment account %s is not present on the daemon", id),
+		"The Bisq payment account linked to %s no longer exists in the Bisq daemon. Re-link an existing account under Trading Accounts → Bisq.", displayMethod(method))
+}
+
+func displayMethod(method string) string {
+	if method == "" {
+		return "the selected payment method"
+	}
+	return method
 }

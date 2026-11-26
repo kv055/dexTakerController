@@ -1,6 +1,7 @@
 package bitcoin
 
 import (
+	"commons/apierror"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -50,7 +51,7 @@ func (ndf *NetworkDataFetcher) FetchAddressBalance(ctx context.Context, address 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("bitcoin: mempool.space returned HTTP %d for address %s", resp.StatusCode, address)
+		return 0, fmt.Errorf("bitcoin: balance of address %s: %w", address, apierror.FromResponse(resp, "mempool.space"))
 	}
 
 	var ar struct {
@@ -104,7 +105,7 @@ func (ndf *NetworkDataFetcher) FetchTransaction(ctx context.Context, txid string
 		}, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bitcoin: mempool.space returned HTTP %d for tx %s", resp.StatusCode, txid)
+		return nil, fmt.Errorf("bitcoin: transaction %s: %w", txid, apierror.FromResponse(resp, "mempool.space"))
 	}
 
 	var payload struct {
@@ -173,7 +174,7 @@ func (ndf *NetworkDataFetcher) fetchTipHeight(ctx context.Context) (int64, error
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("bitcoin: tip height HTTP %d", resp.StatusCode)
+		return 0, fmt.Errorf("bitcoin: tip height: %w", apierror.FromResponse(resp, "mempool.space"))
 	}
 	var height int64
 	if err := json.NewDecoder(resp.Body).Decode(&height); err != nil {

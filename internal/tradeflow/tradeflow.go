@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"commons/apierror"
 	"commons/mmcapabilities"
 	"dexTakerController/internal/cexaccount"
 	"dexTakerController/internal/db"
@@ -401,10 +403,12 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	// Step 1: pre-trade checks (read-only; result logged for observability).
 	report, err := tf.svc.PreTradeCheck(ctx, preTrade)
 	if err != nil {
-		return nil, fmt.Errorf("tradeflow: pre-trade check error: %w", err)
+		return nil, apierror.Wrapf(fmt.Errorf("tradeflow: pre-trade check error: %w", err), CodePreTradeFailed,
+			"The pre-trade checks couldn't run, so nothing was traded: %s", explain(err)).WithStatus(http.StatusBadGateway)
 	}
 	if ok, failed := preTradePassed(report, settlement); !ok {
-		return nil, fmt.Errorf("tradeflow: pre-trade checks failed: %s", strings.Join(failed, "; "))
+		return nil, apierror.Newf(CodePreTradeFailed,
+			"The pre-trade checks failed, so nothing was traded: %s. Fix these and confirm again.", strings.TrimSuffix(strings.Join(failed, "; "), ".")).WithStatus(http.StatusConflict)
 	}
 	// If the caller did not explicitly pick a payment method, the pre-trade check
 	// resolved the highest-priority linked+active catalog entry. Persist that name so
@@ -433,7 +437,8 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	if persist {
 		txID, err = createTradeflowRow(tf.store, order, target, settlement)
 		if err != nil {
-			return nil, fmt.Errorf("tradeflow: persist tradeflow start: %w", err)
+			return nil, apierror.Wrap(fmt.Errorf("tradeflow: persist tradeflow start: %w", err), CodeBookkeepingFailed,
+				"The trade couldn't be recorded in the database, so nothing was traded. Try again; if it keeps failing, check the Postgres container.").WithStatus(http.StatusInternalServerError)
 		}
 		slog.Info("tradeflow: transaction row created", "transaction_id", txID, "status", "CexTradeflowStarted")
 	}
@@ -464,11 +469,13 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	metrics.OrderDuration.WithLabelValues(order.Provider, "spot").Observe(time.Since(spotStart).Seconds())
 	metrics.OrdersPlaced.WithLabelValues(order.Provider, "spot", metrics.Result(err)).Inc()
 	if err != nil {
-		return nil, fmt.Errorf("tradeflow: spot buy failed: %w", err)
+		return nil, spotBuyFailed(order.Provider, fmt.Errorf("tradeflow: spot buy failed: %w", err), err)
 	}
 	filledBTC := spotAmountBTC
 	if isRoboOrder(order) && (spot == nil || spot.Execution == nil || spot.Execution.FilledBTC <= 0) {
-		return nil, fmt.Errorf("RoboSats spot buy has no confirmed fill; reconcile with CEX")
+		return nil, apierror.Newf(CodeNeedsReconcile,
+			"The spot buy on %s returned no confirmed fill, so the RoboSats trade was stopped before anything else moved. Check the order on %s and reconcile it in the Transactions panel before retrying.", order.Provider, order.Provider).
+			WithStatus(http.StatusBadGateway).WithLeg(LegSpot)
 	}
 	if spot.Execution != nil {
 		filledBTC = spot.Execution.FilledBTC
@@ -480,29 +487,41 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	)
 	if persist {
 		if err := recordSpotBuy(tf.store, txID, spot, filledBTC); err != nil {
-			return nil, fmt.Errorf("tradeflow: persist spot buy (order_id=%s): %w", spot.OrderID, err)
+			return nil, apierror.Wrapf(fmt.Errorf("tradeflow: persist spot buy (order_id=%s): %w", spot.OrderID, err), CodeBookkeepingFailed,
+				"The spot buy on %s went through (order %s), but saving it to the database failed, so the trade was stopped there. Don't retry: the BTC is on %s; record the order in the Transactions panel and check the Postgres container.", order.Provider, spot.OrderID, order.Provider).
+				WithStatus(http.StatusInternalServerError).WithLeg(LegSpot)
 		}
 	}
 	if isRoboOrder(order) && filledBTC+1e-8 < spotAmountBTC {
-		return nil, fmt.Errorf("RoboSats spot fill is below the prepared liquidity requirement; reconcile with CEX")
+		return nil, apierror.Newf(CodeNeedsReconcile,
+			"The spot buy on %s filled only %.8f of the %.8f BTC the RoboSats trade needs, so the trade was stopped. The bought BTC is on %s; reconcile the order in the Transactions panel.", order.Provider, filledBTC, spotAmountBTC, order.Provider).
+			WithStatus(http.StatusConflict).WithLeg(LegSpot)
 	}
 	if strings.EqualFold(order.Provider, "coinbase") && filledBTC+1e-8 < netWithdrawalBTC+order.CEXWithdrawalFeeBTC {
 		shortFillErr := fmt.Errorf("coinbase fill %.8f BTC is below net target plus withdrawal reserve %.8f BTC; hedge not opened", filledBTC, netWithdrawalBTC+order.CEXWithdrawalFeeBTC)
 		if persist {
 			if perr := markHedgeFailed(tf.store, txID, spot, shortFillErr); perr != nil {
-				return nil, fmt.Errorf("tradeflow: persist Coinbase short-fill review state: %w", perr)
+				return nil, apierror.Wrapf(fmt.Errorf("tradeflow: persist Coinbase short-fill review state: %w", perr), CodeBookkeepingFailed,
+					"Coinbase filled only %.8f BTC, less than needed, and saving that to the database failed. Don't retry: review the Coinbase order (%s) manually and check the Postgres container.", filledBTC, spot.OrderID).
+					WithStatus(http.StatusInternalServerError).WithLeg(LegSpot)
 			}
 		}
-		return nil, fmt.Errorf("tradeflow: %w", shortFillErr)
+		return nil, apierror.Wrapf(fmt.Errorf("tradeflow: %w", shortFillErr), CodeNeedsReconcile,
+			"Coinbase filled only %.8f BTC, less than the %.8f BTC needed (trade amount plus withdrawal reserve), so no hedge was opened. The bought BTC is on Coinbase; review the trade in the Transactions panel.", filledBTC, netWithdrawalBTC+order.CEXWithdrawalFeeBTC).
+			WithStatus(http.StatusConflict).WithLeg(LegSpot)
 	}
 	if order.BisqPlan != nil && filledBTC+1e-8 < netWithdrawalBTC {
 		shortFillErr := fmt.Errorf("CEX fill %.8f BTC is below Bisq funding requirement %.8f BTC; hedge not opened", filledBTC, netWithdrawalBTC)
 		if persist {
 			if perr := markHedgeFailed(tf.store, txID, spot, shortFillErr); perr != nil {
-				return nil, fmt.Errorf("tradeflow: persist Bisq short-fill review state: %w", perr)
+				return nil, apierror.Wrapf(fmt.Errorf("tradeflow: persist Bisq short-fill review state: %w", perr), CodeBookkeepingFailed,
+					"%s filled only %.8f BTC, less than Bisq needs, and saving that to the database failed. Don't retry: review the order (%s) manually and check the Postgres container.", order.Provider, filledBTC, spot.OrderID).
+					WithStatus(http.StatusInternalServerError).WithLeg(LegSpot)
 			}
 		}
-		return nil, fmt.Errorf("tradeflow: %w", shortFillErr)
+		return nil, apierror.Wrapf(fmt.Errorf("tradeflow: %w", shortFillErr), CodeNeedsReconcile,
+			"%s filled only %.8f BTC, less than the %.8f BTC the Bisq trade needs, so no hedge was opened. The bought BTC is on %s; review the trade in the Transactions panel.", order.Provider, filledBTC, netWithdrawalBTC, order.Provider).
+			WithStatus(http.StatusConflict).WithLeg(LegSpot)
 	}
 
 	// Step 3: open hedge with a guarded retry. From here on the spot is filled, so a
@@ -522,7 +541,9 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 			"hedge_venue", order.HedgeVenue,
 			"err", err,
 		)
-		return nil, fmt.Errorf("tradeflow: hedge open failed (spot filled, order_id=%s, needs review): %w", spot.OrderID, err)
+		return nil, apierror.Wrapf(fmt.Errorf("tradeflow: hedge open failed (spot filled, order_id=%s, needs review): %w", spot.OrderID, err), CodeHedgeFailed,
+			"Opening the hedge on %s failed after the spot buy filled (order %s), so %.8f BTC is now unhedged. Hedge or sell it manually, then mark the trade reviewed in the Transactions panel. Reason: %s", order.HedgeVenue, spot.OrderID, filledBTC, explain(err)).
+			WithStatus(http.StatusBadGateway).WithLeg(LegHedge)
 	}
 	slog.Info("tradeflow: hedge opened",
 		"venue", hedge.Venue,
@@ -531,7 +552,9 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	)
 	if persist {
 		if err := recordHedge(tf.store, txID, order, spot, hedge); err != nil {
-			return nil, fmt.Errorf("tradeflow: persist hedge: %w", err)
+			return nil, apierror.Wrapf(fmt.Errorf("tradeflow: persist hedge: %w", err), CodeBookkeepingFailed,
+				"The hedge on %s was opened (order %s), but saving it to the database failed, so the withdrawal was not started. Don't retry: record the trade in the Transactions panel and check the Postgres container.", hedge.Venue, hedge.OrderID).
+				WithStatus(http.StatusInternalServerError).WithLeg(LegHedge)
 		}
 	}
 
@@ -551,7 +574,9 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 	metrics.OrderDuration.WithLabelValues(order.Provider, "withdrawal").Observe(time.Since(wdStart).Seconds())
 	metrics.OrdersPlaced.WithLabelValues(order.Provider, "withdrawal", metrics.Result(err)).Inc()
 	if err != nil {
-		return nil, fmt.Errorf("tradeflow: withdrawal failed (spot order_id=%s, hedge open): %w", spot.OrderID, err)
+		return nil, apierror.Wrapf(fmt.Errorf("tradeflow: withdrawal failed (spot order_id=%s, hedge open): %w", spot.OrderID, err), CodeWithdrawalFailed,
+			"Withdrawing %.8f BTC from %s to the Lightning node failed after the spot buy (order %s) and the hedge went through. The BTC is still on %s; withdraw it manually, then reconcile the trade in the Transactions panel. Reason: %s", withdrawAmountBTC, order.Provider, spot.OrderID, order.Provider, explain(err)).
+			WithStatus(http.StatusBadGateway).WithLeg(LegWithdrawal)
 	}
 	slog.Info("tradeflow: withdrawal initiated",
 		"withdrawal_id", wd.WithdrawalID,
@@ -576,7 +601,9 @@ func (tf *TradeFlow) runBid(ctx context.Context, order Order) (*Result, error) {
 
 	if persist {
 		if err := recordWithdrawal(tf.store, txID, order, spot, hedge, result, target, settlement); err != nil {
-			return nil, fmt.Errorf("tradeflow: persist withdrawal: %w", err)
+			return nil, apierror.Wrapf(fmt.Errorf("tradeflow: persist withdrawal: %w", err), CodeBookkeepingFailed,
+				"The withdrawal from %s was submitted (ID %s), but saving it to the database failed. Don't retry: record the trade in the Transactions panel and check the Postgres container.", order.Provider, wd.WithdrawalID).
+				WithStatus(http.StatusInternalServerError).WithLeg(LegWithdrawal)
 		}
 	}
 
@@ -744,70 +771,70 @@ func (tf *TradeFlow) runAsk(_ context.Context, _ Order) (*Result, error) {
 
 func validate(o Order) error {
 	if strings.EqualFold(strings.TrimSpace(o.Dex), "mostro") && (strings.ToLower(strings.TrimSpace(o.MarketSide)) != "bid" || o.ResolvedRoute == nil || !o.ResolvedRoute.UsesLightning()) {
-		return fmt.Errorf("tradeflow: Mostro requires a bid-side Lightning route")
+		return ErrMostroRoute()
 	}
 
 	if o.ResolvedRoute != nil && !o.ResolvedRoute.ValidForExecution() {
-		return fmt.Errorf("tradeflow: invalid resolved_route")
+		return RouteProblem("tradeflow: invalid resolved_route")
 	}
 	side := strings.ToLower(strings.TrimSpace(o.MarketSide))
 	if side != "bid" && side != "ask" {
-		return fmt.Errorf("tradeflow: market_side must be \"bid\" or \"ask\", got %q", o.MarketSide)
+		return RouteProblem("tradeflow: market_side must be \"bid\" or \"ask\", got %q", o.MarketSide)
 	}
 	if strings.TrimSpace(o.Provider) == "" {
-		return fmt.Errorf("tradeflow: provider is required")
+		return RouteProblem("tradeflow: provider is required")
 	}
 	if o.BTCAmount <= 0 {
-		return fmt.Errorf("tradeflow: btc_amount must be greater than zero")
+		return RouteProblem("tradeflow: btc_amount must be greater than zero")
 	}
 	if o.RequiredCapital <= 0 {
-		return fmt.Errorf("tradeflow: required_capital must be greater than zero")
+		return RouteProblem("tradeflow: required_capital must be greater than zero")
 	}
 	if o.RoutingFeeAllowanceSat < 0 || o.CEXWithdrawalFeeBTC < 0 || o.SwapSafetyHeadroomBTC < 0 {
-		return fmt.Errorf("tradeflow: swap fee allowances and safety headroom cannot be negative")
+		return RouteProblem("tradeflow: swap fee allowances and safety headroom cannot be negative")
 	}
 	mode := cexaccount.NormalizeTradeMode(o.TradeMode)
 	if o.ResolvedRoute != nil && o.ResolvedRoute.UsesLightning() && o.RequiredBTCLiquidity <= 0 {
-		return fmt.Errorf("tradeflow: required_btc_liquidity must be greater than zero for Swap_main2lightning routes")
+		return RouteProblem("tradeflow: required_btc_liquidity must be greater than zero for Swap_main2lightning routes")
 	}
 	if mode == cexaccount.TradeModeHedgelessDoubleCollateral {
 		// Hedgeless execution intentionally has a narrow support matrix. Rejecting
 		// unsupported sides/venues/providers here prevents a partially completed
 		// money flow from discovering the limitation after BTC has moved.
 		if side != "bid" {
-			return fmt.Errorf("tradeflow: hedgeless execution is supported only for bid-side offers")
+			return ErrHedgelessAskSide()
 		}
 		if o.RequiredBTCLiquidity <= 0 {
-			return fmt.Errorf("tradeflow: required_btc_liquidity must be greater than zero in hedgeless mode")
+			return RouteProblem("tradeflow: required_btc_liquidity must be greater than zero in hedgeless mode")
 		}
 		if o.SecurityDepositBTC < 0 || o.RequiredBTCLiquidity+1e-12 < o.BTCAmount+o.SecurityDepositBTC {
-			return fmt.Errorf("tradeflow: required_btc_liquidity must cover btc_amount plus security_deposit_btc")
+			return RouteProblem("tradeflow: required_btc_liquidity must cover btc_amount plus security_deposit_btc")
 		}
 		if strings.TrimSpace(o.OfferID) == "" || strings.TrimSpace(o.Dex) == "" {
-			return fmt.Errorf("tradeflow: offer_id and dex are required in hedgeless mode")
+			return RouteProblem("tradeflow: offer_id and dex are required in hedgeless mode")
 		}
 		if o.FiatAmount <= 0 {
-			return fmt.Errorf("tradeflow: fiat_amount must be greater than zero in hedgeless mode")
+			return RouteProblem("tradeflow: fiat_amount must be greater than zero in hedgeless mode")
 		}
 		switch strings.ToLower(strings.TrimSpace(o.Dex)) {
 		case "bisq", "hodlhodl", "robosats":
 		default:
-			return fmt.Errorf("tradeflow: hedgeless execution is not supported for dex %q", o.Dex)
+			return ErrHedgelessDEX(o.Dex)
 		}
 		switch strings.ToLower(strings.TrimSpace(o.Provider)) {
 		case "binance", "kraken", "coinbase":
 		default:
-			return fmt.Errorf("tradeflow: hedgeless pool refill is not supported for CEX provider %q", o.Provider)
+			return ErrHedgelessProvider(o.Provider, "Binance", "Kraken", "Coinbase")
 		}
 	} else {
 		if strings.TrimSpace(o.HedgeVenue) == "" {
-			return fmt.Errorf("tradeflow: hedge_venue is required")
+			return ErrNoHedgeVenue()
 		}
 		if strings.TrimSpace(o.HedgeSide) == "" {
-			return fmt.Errorf("tradeflow: hedge_side is required")
+			return RouteProblem("tradeflow: hedge_side is required")
 		}
 		if o.HedgeNotionalBTC <= 0 {
-			return fmt.Errorf("tradeflow: hedge_notional_btc must be greater than zero")
+			return RouteProblem("tradeflow: hedge_notional_btc must be greater than zero")
 		}
 	}
 	return nil

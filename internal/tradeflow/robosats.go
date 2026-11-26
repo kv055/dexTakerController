@@ -37,7 +37,7 @@ func (tf *TradeFlow) WithRoboSats(c *robosats.Coordinator, workerEnabled bool, r
 func (tf *TradeFlow) QuoteRoboSats(ctx context.Context, input robosats.QuoteInput) (*robosats.NativeTerms, error) {
 	p, ok := tf.hedgelessDEX.(roboPreparer)
 	if !ok || !tf.roboWorkerEnabled {
-		return nil, fmt.Errorf("RoboSats durable execution is unavailable")
+		return nil, robosats.ErrDisabled()
 	}
 	return p.QuoteRoboSats(ctx, input)
 }
@@ -57,10 +57,11 @@ func (tf *TradeFlow) AdmitRoboSats(ctx context.Context, order Order) (uint, erro
 		return q.TransactionID, nil
 	}
 	if !tf.roboWorkerEnabled || tf.robo == nil || !tf.robo.Enabled {
-		return 0, fmt.Errorf("RoboSats new execution is disabled")
+		return 0, robosats.ErrDisabled()
 	}
 	if order.Dex != "robosats" || order.MarketSide != "bid" || order.TransactionID != 0 || q.Exchange != "robosats" || q.OfferID != order.OfferID || q.Route == nil {
-		return 0, fmt.Errorf("RoboSats admission requires an unbound bid quote")
+		return 0, RouteProblem("RoboSats admission requires an unbound bid quote (dex=%q side=%q tx=%d quote_exchange=%q quote_offer=%q offer=%q has_route=%t)",
+			order.Dex, order.MarketSide, order.TransactionID, q.Exchange, q.OfferID, order.OfferID, q.Route != nil)
 	}
 	if err := validate(order); err != nil {
 		return 0, err
@@ -70,7 +71,7 @@ func (tf *TradeFlow) AdmitRoboSats(ctx context.Context, order Order) (uint, erro
 	}
 	p, ok := tf.hedgelessDEX.(roboPreparer)
 	if !ok {
-		return 0, fmt.Errorf("RoboSats identity preparation is unavailable")
+		return 0, robosats.ErrDisabled()
 	}
 	s, err := p.PrepareRoboSats(ctx, robosatsOfferInput(order, 0))
 	if err != nil {
@@ -322,7 +323,7 @@ func (tf *TradeFlow) completeRoboSats(ctx context.Context, tx *db.Transaction) e
 	}
 	active := fmt.Sprint(robot["active_order_id"])
 	if active != "<nil>" && active != "" && active != "0" {
-		return fmt.Errorf("RoboSats robot still has an active order")
+		return fmt.Errorf("RoboSats robot still has active order #%s; the trade completes once that order is finished or cancelled in RoboSats", active)
 	}
 	for _, payment := range s.Payments {
 		if !payment.Attempted && !payment.Submitted {

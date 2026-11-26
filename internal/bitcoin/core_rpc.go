@@ -2,6 +2,7 @@ package bitcoin
 
 import (
 	"bytes"
+	"commons/apierror"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -58,7 +59,7 @@ func (c *CoreRPCClient) Ping(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("bitcoin Core ping returned HTTP %d", resp.StatusCode)
+		return fmt.Errorf("bitcoin Core ping: %w", apierror.FromResponse(resp, "Bitcoin Core"))
 	}
 	var payload struct {
 		Error *struct {

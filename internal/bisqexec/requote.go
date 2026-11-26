@@ -2,6 +2,7 @@ package bisqexec
 
 import (
 	"bytes"
+	"commons/apierror"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -47,7 +48,14 @@ func (q HTTPRouteQuoter) RequoteBisq(ctx context.Context, in bisqroute.Request) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("authoritative Bisq requote returned HTTP %d", resp.StatusCode)
+		upstream := apierror.FromResponse(resp, "the Unified API")
+		reason := upstream.Reason
+		if reason == "" {
+			reason = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+		return nil, apierror.Wrapf(upstream, "bisq_requote_failed",
+			"The Unified API couldn't re-price this Bisq offer, so the trade was not started: %s. Refresh the offer and request a new Bisq quote.", strings.TrimSuffix(reason, ".")).
+			WithStatus(http.StatusConflict)
 	}
 	var route db.ResolvedRoute
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&route); err != nil {

@@ -1,12 +1,14 @@
 package robosats
 
 import (
+	"commons/apierror"
 	"commons/credentialcrypto"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
@@ -60,52 +62,55 @@ func (c *Coordinator) Check(ctx context.Context, req TakeRequest) error {
 		req.RequestID = 1
 	}
 	if c == nil || !c.Enabled {
-		return fmt.Errorf("robosats: new execution is disabled")
+		return ErrDisabled()
 	}
 	if err := c.Ready(); err != nil {
-		return err
+		return apierror.Wrap(err, CodeDisabled, "RoboSats trading is not fully set up on this server (the durable store, Lightning wallet or coordinator connection is missing). Check the Taker Controller's RoboSats configuration and restart it.").WithStatus(http.StatusServiceUnavailable)
 	}
 	if err := validateTakeRequest(req); err != nil {
 		return err
 	}
 	if _, err := c.resolveURL(req.CoordinatorID); err != nil {
-		return err
+		return ErrCoordinatorUnknown(req.CoordinatorID, err)
 	}
 	token, err := c.Token(ctx, req.CredentialID)
 	if err != nil || strings.TrimSpace(token) == "" {
-		return fmt.Errorf("robosats: configured robot credential is required")
+		if err != nil && req.CredentialID != 0 {
+			return apierror.Wrap(err, CodeNoRobot, "The RoboSats robot this trade was quoted with is no longer active. Re-activate it under Trading Accounts, or request a new quote.").WithStatus(http.StatusConflict)
+		}
+		return ErrNoRobot()
 	}
 	if req.TokenFingerprint != "" && tokenFingerprint(token) != req.TokenFingerprint {
-		return fmt.Errorf("robosats: credential rotation changed the bound robot")
+		return apierror.New(CodeRobotRejected, "The RoboSats robot token changed after this trade was quoted, so the trade can't continue with a different robot. Request a new quote.").WithStatus(http.StatusConflict)
 	}
 	api, err := c.Dial(req.CoordinatorID, token)
 	if err != nil {
-		return err
+		return ErrCoordinatorUnknown(req.CoordinatorID, err)
 	}
 	robot, err := api.GetRobot(ctx)
 	if err != nil {
-		return err
+		return explainCoordinatorError(err, "load your robot")
 	}
-	if robotString(robot, "active_order_id") != "" && robotString(robot, "active_order_id") != req.OrderID {
-		return fmt.Errorf("robosats: robot already has an active order")
+	if active := robotString(robot, "active_order_id"); active != "" && active != req.OrderID {
+		return robotBusy(active)
 	}
 	pos, err := api.GetPosition(ctx, req.OrderID)
 	if err != nil {
-		return fmt.Errorf("robosats: offer is not available: %w", err)
+		return explainCoordinatorError(err, "load this offer")
 	}
-	if pos == nil || pos.Type != TypeBuy || pos.Status != StatusPublic || pos.IsMaker || pos.IsTaker {
-		return fmt.Errorf("robosats: taking a bid requires a maker-buy order")
+	if err := offerStateProblem(pos, req.OrderID); err != nil {
+		return err
 	}
 	if !strings.EqualFold(strings.TrimSpace(pos.PaymentMethod), strings.TrimSpace(req.PaymentMethod)) && req.PaymentMethod != "" {
 		if !strings.Contains(strings.ToLower(pos.PaymentMethod), strings.ToLower(req.PaymentMethod)) {
-			return fmt.Errorf("robosats: selected payment method is not accepted")
+			return apierror.Newf(CodePaymentMethod, "Offer #%s doesn't accept %q on RoboSats (it lists %q). Pick one of the offer's payment methods.", req.OrderID, req.PaymentMethod, strings.TrimSpace(pos.PaymentMethod)).WithStatus(http.StatusConflict)
 		}
 	}
 	if req.Terms != nil {
 		return req.Terms.CheckPosition(pos, c.now())
 	}
 	if req.QuoteID != "" {
-		return fmt.Errorf("robosats: quote has no verified native terms")
+		return apierror.New(CodeInvalidTerms, "This RoboSats quote has no verified terms from the coordinator. Close the confirmation and request a new quote.").WithStatus(http.StatusConflict)
 	}
 	return nil
 }
@@ -128,7 +133,7 @@ func (c *Coordinator) Take(ctx context.Context, req TakeRequest) (*TakeResult, e
 	}
 	if s == nil {
 		if !c.Enabled {
-			return nil, fmt.Errorf("robosats: new execution is disabled")
+			return nil, ErrDisabled()
 		}
 		req.TokenFingerprint = firstNonEmpty(req.TokenFingerprint, func() string {
 			token, terr := c.Token(ctx, req.CredentialID)

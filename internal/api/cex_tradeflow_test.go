@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"dexTakerController/internal/cexaccount"
@@ -88,9 +89,10 @@ func TestHandleCexPreTradeCheckReportsInvalidUnifiedAPIRouteSnapshot(t *testing.
 	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
+	// The operator sees why nothing started; the field-level reason stays as detail.
 	want := "invalid resolved_route from unified API: required_btc_liquidity must cover btc_amount plus security_deposit_btc"
-	if response["error"] != want {
-		t.Fatalf("error = %q, want %q", response["error"], want)
+	if response["code"] != tradeflow.CodeInvalidRoute || response["detail"] != want || !strings.Contains(response["error"], "nothing was started") {
+		t.Fatalf("response = %+v, want code %q with detail %q", response, tradeflow.CodeInvalidRoute, want)
 	}
 }
 
@@ -115,9 +117,10 @@ func TestHandleCexTradeflowReportsInvalidUnifiedAPIRouteSnapshot(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
+	// The operator sees why nothing started; the field-level reason stays as detail.
 	want := "invalid resolved_route from unified API: required_btc_liquidity must cover btc_amount plus security_deposit_btc"
-	if response["error"] != want {
-		t.Fatalf("error = %q, want %q", response["error"], want)
+	if response["code"] != tradeflow.CodeInvalidRoute || response["detail"] != want || !strings.Contains(response["error"], "nothing was started") {
+		t.Fatalf("response = %+v, want code %q with detail %q", response, tradeflow.CodeInvalidRoute, want)
 	}
 }
 
@@ -136,8 +139,8 @@ func TestHandleCexPreTradeCheckRequiresUnifiedAPIRouteSnapshot(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body["error"] != "resolved_route from unified API is required" {
-		t.Fatalf("error = %q", body["error"])
+	if body["code"] != tradeflow.CodeInvalidRoute || body["detail"] != "resolved_route from unified API is required" {
+		t.Fatalf("response = %+v", body)
 	}
 }
 

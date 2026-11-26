@@ -1,6 +1,7 @@
 package robosats
 
 import (
+	"commons/apierror"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,7 +28,7 @@ func LoadFederation(ctx context.Context, client *http.Client, registry map[strin
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("federation registry HTTP %d", res.StatusCode)
+		return nil, fmt.Errorf("RoboSats federation registry: %w", apierror.FromResponse(res, "the RoboSats federation registry"))
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {

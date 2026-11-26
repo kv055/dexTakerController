@@ -1,6 +1,7 @@
 package cexaccount
 
 import (
+	"commons/apierror"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -92,7 +93,7 @@ func (c *HTTPFiatControllerChecker) get(ctx context.Context, path string, output
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("unexpected HTTP status %d", resp.StatusCode)
+		return apierror.FromResponse(resp, "the Fiat Controller")
 	}
 	if output != nil {
 		if err := json.NewDecoder(resp.Body).Decode(output); err != nil {

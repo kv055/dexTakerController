@@ -7,11 +7,29 @@ import (
 )
 
 // Permanent errors must never be treated as a transient transport outage.
-type ProtocolError struct{ Message string }
+// Status and Detail are set when the coordinator refused a request with a 4xx
+// answer: Detail is the explanation it gave (its "bad_request" text), if any.
+type ProtocolError struct {
+	Message string
+	Status  int
+	Detail  string
+}
 
-func (e *ProtocolError) Error() string           { return e.Message }
-func permanent(format string, args ...any) error { return &ProtocolError{fmt.Sprintf(format, args...)} }
-func IsPermanent(err error) bool                 { var p *ProtocolError; return errors.As(err, &p) }
+func (e *ProtocolError) Error() string { return e.Message }
+func permanent(format string, args ...any) error {
+	return &ProtocolError{Message: fmt.Sprintf(format, args...)}
+}
+func IsPermanent(err error) bool { var p *ProtocolError; return errors.As(err, &p) }
+
+// RejectedStatus returns the coordinator's 4xx status and explanation when err
+// is a refused request, or 0 otherwise.
+func RejectedStatus(err error) (int, string) {
+	var p *ProtocolError
+	if errors.As(err, &p) {
+		return p.Status, p.Detail
+	}
+	return 0, ""
+}
 
 // Coordinator order status codes from the upstream Order model.
 const (
